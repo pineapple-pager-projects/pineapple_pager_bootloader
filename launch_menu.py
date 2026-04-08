@@ -598,10 +598,11 @@ start_service() {
     FRAME_DIR="/overlay/upper/boot_frames"
     [ -d "$FRAME_DIR" ] || return 0
     (
+        FRAMES=$(ls "$FRAME_DIR"/*.fb 2>/dev/null | sort -V)
+        [ -z "$FRAMES" ] && exit 0
         while true; do
-            for i in 1 2 3 4; do
-                [ -f "$FRAME_DIR/$i.fb" ] || continue
-                dd if="$FRAME_DIR/$i.fb" of=/dev/fb0 conv=nocreat 2>/dev/null
+            for f in $FRAMES; do
+                dd if="$f" of=/dev/fb0 conv=nocreat 2>/dev/null
                 sleep 0.55
             done
         done
