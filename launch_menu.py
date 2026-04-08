@@ -62,6 +62,7 @@ DEFAULT_COLORS = {
 PAGER_UI_ENTRY = {"name": "Exit to Pager UI", "path": "__pager_service__"}
 SETTINGS_ENTRY = {"name": "Settings", "path": "__settings__"}
 SHUTDOWN_ENTRY = {"name": "Shutdown", "path": "__shutdown__"}
+RESTART_ENTRY = {"name": "Restart Bootloader", "path": "__restart__"}
 
 INIT_SCRIPT_PATH = "/etc/init.d/pagerctl_bootloader"
 
@@ -109,6 +110,31 @@ def resolve_path(path):
     return os.path.join(SCRIPT_DIR, path)
 
 
+SETTINGS_FILE = os.path.join(SCRIPT_DIR, 'settings.json')
+
+
+def load_settings():
+    """Load persistent settings from disk."""
+    defaults = {'brightness': 80, 'sound_enabled': True, 'category_view': False}
+    if os.path.isfile(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, 'r') as f:
+                saved = json.load(f)
+            defaults.update(saved)
+        except Exception:
+            pass
+    return defaults
+
+
+def save_settings(settings):
+    """Save settings to disk."""
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Payload discovery
 # ---------------------------------------------------------------------------
@@ -144,7 +170,7 @@ def discover_payloads():
                         requires = line[len('# Requires:'):].strip()
                     elif line.startswith('# Category:'):
                         category = line[len('# Category:'):].strip()
-                    if title and requires:
+                    if title and requires and category != "Other":
                         break
         except Exception:
             continue
@@ -237,12 +263,22 @@ class LauncherMenu:
         self.payloads.append(SETTINGS_ENTRY)
         self.payloads.append(PAGER_UI_ENTRY)
         self.payloads.append(SHUTDOWN_ENTRY)
+        self.payloads.append(RESTART_ENTRY)
 
         self.selected = 0
         self.scroll_offset = 0
-        self.sound_enabled = True
-        self.category_view = False
         self.max_visible = 6
+
+        # Load persistent settings
+        settings = load_settings()
+        self.sound_enabled = settings['sound_enabled']
+        self.category_view = settings['category_view']
+
+        # Apply saved brightness
+        try:
+            self.pager.set_brightness(settings['brightness'])
+        except Exception:
+            pass
 
     def _rgb(self, color):
         return self.pager.rgb(color[0], color[1], color[2])
@@ -301,7 +337,7 @@ class LauncherMenu:
         if self.scroll_offset > 0:
             self.pager.draw_ttf(SCREEN_W - 30, start_y - 15, "^", unselected_color, self.font, 14)
         if self.scroll_offset + visible_items < len(self.payloads):
-            self.pager.draw_ttf(SCREEN_W - 30, start_y + visible_items * item_height,
+            self.pager.draw_ttf(SCREEN_W - 30, start_y + (visible_items - 1) * item_height,
                                 "v", unselected_color, self.font, 14)
 
         self.pager.flip()
@@ -323,12 +359,56 @@ class LauncherMenu:
                 pass
 
     def _show_category_menu(self, category_name, payloads):
-        """Show payloads within a category. Returns selected payload or None for back."""
+        """Show payloads within a category with scrolling. Returns selected payload or None for back."""
         selected = 0
+        scroll_offset = 0
+        max_vis = self.max_visible
         items = list(payloads) + [{"name": "Back", "path": "__back__"}]
 
         while True:
-            self._draw_submenu(category_name, [p['name'] for p in items], selected)
+            # Draw with scrolling
+            if self.bg_image and os.path.isfile(self.bg_image):
+                try:
+                    self.pager.draw_image_file_scaled(0, 0, SCREEN_W, SCREEN_H, self.bg_image)
+                except Exception:
+                    self.pager.clear(self.pager.BLACK)
+            else:
+                self.pager.clear(self.pager.BLACK)
+
+            if self.font:
+                title_color = self._rgb(self.colors['title'])
+                selected_color = self._rgb(self.colors['selected'])
+                unselected_color = self._rgb(self.colors['unselected'])
+
+                if self.show_title:
+                    tw = self.pager.ttf_width(category_name, self.title_font, self.title_fs)
+                    self.pager.draw_ttf((SCREEN_W - tw) // 2, 28, category_name, title_color, self.title_font, self.title_fs)
+
+                item_height = 22
+                start_y = 70
+                visible = min(max_vis, len(items))
+
+                if selected < scroll_offset:
+                    scroll_offset = selected
+                elif selected >= scroll_offset + visible:
+                    scroll_offset = selected - visible + 1
+
+                for i in range(visible):
+                    idx = scroll_offset + i
+                    if idx >= len(items):
+                        break
+                    y = start_y + i * item_height
+                    is_sel = idx == selected
+                    color = selected_color if is_sel else unselected_color
+                    tw = self.pager.ttf_width(items[idx]['name'], self.font, self.item_fs)
+                    self.pager.draw_ttf((SCREEN_W - tw) // 2, y, items[idx]['name'], color, self.font, self.item_fs)
+
+                if scroll_offset > 0:
+                    self.pager.draw_ttf(SCREEN_W - 30, start_y, "^", unselected_color, self.font, 14)
+                if scroll_offset + visible < len(items):
+                    self.pager.draw_ttf(SCREEN_W - 30, start_y + (visible - 1) * item_height, "v", unselected_color, self.font, 14)
+
+            self.pager.flip()
 
             button = self.pager.wait_button()
             if button & self.pager.BTN_UP:
@@ -373,7 +453,7 @@ class LauncherMenu:
         """Run with category navigation."""
         categories = group_by_category(
             [p for p in self.payloads if p.get('path') not in
-             ('__pager_service__', '__settings__', '__shutdown__')]
+             ('__pager_service__', '__settings__', '__shutdown__', '__restart__')]
         )
         cat_names = sorted(categories.keys())
         # Build menu: categories + system items
@@ -381,6 +461,7 @@ class LauncherMenu:
         menu_items.append(SETTINGS_ENTRY)
         menu_items.append(PAGER_UI_ENTRY)
         menu_items.append(SHUTDOWN_ENTRY)
+        menu_items.append(RESTART_ENTRY)
 
         selected = 0
         scroll_offset = 0
@@ -429,7 +510,7 @@ class LauncherMenu:
                 if scroll_offset > 0:
                     self.pager.draw_ttf(SCREEN_W - 30, start_y - 15, "^", unselected_color, self.font, 14)
                 if scroll_offset + visible < len(menu_items):
-                    self.pager.draw_ttf(SCREEN_W - 30, start_y + visible * item_height, "v", unselected_color, self.font, 14)
+                    self.pager.draw_ttf(SCREEN_W - 30, start_y + (visible - 1) * item_height, "v", unselected_color, self.font, 14)
 
             self.pager.flip()
 
@@ -646,11 +727,13 @@ stop_service() {
                 if selected == 0:
                     brightness = max(5, brightness - 5)
                     self.pager.set_brightness(brightness)
+                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view})
                     self._beep()
             elif button & self.pager.BTN_RIGHT:
                 if selected == 0:
                     brightness = min(100, brightness + 5)
                     self.pager.set_brightness(brightness)
+                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view})
                     self._beep()
             elif button & self.pager.BTN_A:
                 if selected == 0:
@@ -658,10 +741,12 @@ stop_service() {
                 elif selected == 1:
                     # Toggle sound
                     self.sound_enabled = not self.sound_enabled
+                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view})
                     self._beep_select()
                 elif selected == 2:
                     # Toggle category view
                     self.category_view = not self.category_view
+                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view})
                     self._beep_select()
                 elif selected == 3:
                     # Toggle boot
@@ -726,8 +811,9 @@ def shutdown_pager():
 
 
 def main():
+    menu = LauncherMenu()
+
     while True:
-        menu = LauncherMenu()
         selection = menu.run()
 
         if selection is None or selection['path'] == '__pager_service__':
@@ -739,16 +825,21 @@ def main():
             menu.cleanup()
             shutdown_pager()
             break
+        elif selection['path'] == '__restart__':
+            menu._show_message("Restarting...")
+            menu.cleanup()
+            time.sleep(0.3)
+            menu = LauncherMenu()
         elif selection['path'] == '__settings__':
             menu.show_settings()
-            # Return to main menu after settings
-            menu.cleanup()
-            time.sleep(0.1)
+            # Settings returns here — menu object keeps all state
         else:
             menu.cleanup()
             launch_payload(selection['path'])
-            # Payload exited — loop back to launcher menu
+            # Payload exited — recreate menu (pagerctl needs reinit)
+            # Settings load from disk automatically
             time.sleep(0.3)
+            menu = LauncherMenu()
 
 
 if __name__ == '__main__':
