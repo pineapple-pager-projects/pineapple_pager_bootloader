@@ -536,7 +536,7 @@ class LauncherMenu:
 
     def _is_boot_enabled(self):
         """Check if bootloader is set to run on boot."""
-        return os.path.exists("/etc/rc.d/S49pagerctl_bootloader")
+        return os.path.exists("/etc/rc.d/S16pagerctl_bootloader")
 
     def _draw_submenu(self, title, items, selected):
         """Draw a submenu screen matching the main menu style."""
@@ -583,68 +583,122 @@ class LauncherMenu:
         time.sleep(duration)
 
     def _install_boot(self):
-        """Install the bootloader as boot default."""
-        init_script = '''#!/bin/sh /etc/rc.common
-# Pagerctl Bootloader — runs before pineapplepager service
+        """Install bootloader (START=16) and boot splash (START=00)."""
+        # Boot splash — kills default animation, plays custom frames
+        boot_splash_script = '''#!/bin/sh /etc/rc.common
 USE_PROCD=1
-START=49
-
+START=00
 start_service() {
-    # Kill boot animation so we can take over the display
+    [ -f /etc/rc.d/S16pagerctl_bootloader ] || return 0
+    for i in 1 2 3 4 5; do
+        killall boot_animation 2>/dev/null
+        pgrep -x boot_animation >/dev/null 2>&1 || break
+        sleep 0.1
+    done
+    FRAME_DIR="/overlay/upper/boot_frames"
+    [ -d "$FRAME_DIR" ] || return 0
+    (
+        while true; do
+            for i in 1 2 3 4; do
+                [ -f "$FRAME_DIR/$i.fb" ] || continue
+                dd if="$FRAME_DIR/$i.fb" of=/dev/fb0 conv=nocreat 2>/dev/null
+                sleep 0.55
+            done
+        done
+    ) &
+    echo $! > /tmp/custom_boot_anim.pid
+}
+stop_service() {
+    [ -f /tmp/custom_boot_anim.pid ] && kill $(cat /tmp/custom_boot_anim.pid) 2>/dev/null
+    rm -f /tmp/custom_boot_anim.pid
+}
+'''
+        # Bootloader — launches menu after mmc is available
+        bootloader_script = '''#!/bin/sh /etc/rc.common
+USE_PROCD=1
+START=16
+start_service() {
     killall boot_animation 2>/dev/null
-
+    [ -f /tmp/custom_boot_anim.pid ] && kill $(cat /tmp/custom_boot_anim.pid) 2>/dev/null
+    rm -f /tmp/custom_boot_anim.pid
     /etc/init.d/pineapplepager disable 2>/dev/null
     /etc/init.d/pineapplepager stop 2>/dev/null
-
-    LAUNCHER_DIR="/root/payloads/user/general/pagerctl_bootloader"
-    if [ ! -f "$LAUNCHER_DIR/launch_menu.py" ]; then
-        /etc/init.d/pineapplepager enable 2>/dev/null
-        /etc/init.d/pineapplepager start 2>/dev/null
-        return
-    fi
-
-    export PATH="/mmc/usr/bin:$LAUNCHER_DIR/bin:$PATH"
-    export PYTHONPATH="$LAUNCHER_DIR/lib:$LAUNCHER_DIR:$PYTHONPATH"
-    export LD_LIBRARY_PATH="/mmc/usr/lib:$LAUNCHER_DIR/lib:$LD_LIBRARY_PATH"
-
-    cd "$LAUNCHER_DIR"
+    LAUNCHER_DIR=/root/payloads/user/general/pagerctl_bootloader
+    [ -f "$LAUNCHER_DIR/launch_menu.py" ] || { /etc/init.d/pineapplepager enable; /etc/init.d/pineapplepager start; return; }
+    export PATH=/mmc/usr/bin:$PATH
+    export PYTHONPATH=$LAUNCHER_DIR/lib:$LAUNCHER_DIR
+    export LD_LIBRARY_PATH=/mmc/usr/lib:$LAUNCHER_DIR/lib
+    cd $LAUNCHER_DIR
     python3 launch_menu.py &
 }
-
 stop_service() {
     return 0
 }
 '''
         try:
+            # Convert boot frame PNGs to .fb if boot_frames/ has PNGs
+            boot_frames_dir = os.path.join(SCRIPT_DIR, 'boot_frames')
+            if os.path.isdir(boot_frames_dir):
+                pngs = [f for f in os.listdir(boot_frames_dir) if f.endswith('.png')]
+                if pngs:
+                    self._show_message("Converting boot frames...", 0.5)
+                    converter = os.path.join(SCRIPT_DIR, 'png2fb.py')
+                    if os.path.isfile(converter):
+                        subprocess.run(['python3', converter], capture_output=True, timeout=30)
+
+            # Install boot splash (START=00)
+            splash_path = "/etc/init.d/boot_splash"
+            with open(splash_path, 'w') as f:
+                f.write(boot_splash_script)
+            os.chmod(splash_path, 0o755)
+            splash_symlink = "/etc/rc.d/S00boot_splash"
+            if os.path.exists(splash_symlink):
+                os.remove(splash_symlink)
+            os.symlink("../init.d/boot_splash", splash_symlink)
+
+            # Install bootloader (START=16)
             with open(INIT_SCRIPT_PATH, 'w') as f:
-                f.write(init_script)
+                f.write(bootloader_script)
             os.chmod(INIT_SCRIPT_PATH, 0o755)
-            # Create symlink directly (don't call enable — it hangs via procd)
-            symlink = "/etc/rc.d/S49pagerctl_bootloader"
-            if os.path.exists(symlink):
-                os.remove(symlink)
-            os.symlink("../init.d/pagerctl_bootloader", symlink)
-            # Disable pager service by removing its symlink
+            bl_symlink = "/etc/rc.d/S16pagerctl_bootloader"
+            if os.path.exists(bl_symlink):
+                os.remove(bl_symlink)
+            os.symlink("../init.d/pagerctl_bootloader", bl_symlink)
+
+            # Remove old symlink if exists
+            old_symlink = "/etc/rc.d/S49pagerctl_bootloader"
+            if os.path.exists(old_symlink):
+                os.remove(old_symlink)
+
+            # Disable pager service
             pager_symlink = "/etc/rc.d/S50pineapplepager"
             if os.path.exists(pager_symlink):
                 os.remove(pager_symlink)
+
             return True
         except Exception:
             return False
 
     def _uninstall_boot(self):
-        """Remove the bootloader from boot and restore pager service."""
+        """Remove bootloader and boot splash from boot, restore pager service."""
         try:
-            # Remove bootloader symlink and init script
-            symlink = "/etc/rc.d/S49pagerctl_bootloader"
-            if os.path.exists(symlink):
-                os.remove(symlink)
+            # Remove boot splash
+            for path in ["/etc/rc.d/S00boot_splash", "/etc/init.d/boot_splash"]:
+                if os.path.exists(path):
+                    os.remove(path)
+
+            # Remove bootloader symlinks and init script
+            for path in ["/etc/rc.d/S16pagerctl_bootloader", "/etc/rc.d/S49pagerctl_bootloader"]:
+                if os.path.exists(path):
+                    os.remove(path)
             if os.path.isfile(INIT_SCRIPT_PATH):
                 os.remove(INIT_SCRIPT_PATH)
-            # Re-enable pager service by creating its symlink
+
+            # Re-enable pager service
             pager_symlink = "/etc/rc.d/S50pineapplepager"
             if not os.path.exists(pager_symlink):
                 os.symlink("../init.d/pineapplepager", pager_symlink)
+
             return True
         except Exception:
             return False
