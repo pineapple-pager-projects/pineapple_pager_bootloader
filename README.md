@@ -174,13 +174,29 @@ The bootloader uses the active Pineapple Pager theme's background by default (`a
 | `colors.unselected` | [255, 255, 255] | Unselected menu item color |
 | `colors.highlight_bg` | [30, 50, 80] | Highlight background (not currently used) |
 
+### Directory Structure
+
+```
+pagerctl_bootloader/
+  launcher_config.json    # Theme and menu configuration
+  fonts/
+    title.TTF             # Title font
+    menu.ttf              # Menu item font
+  images/                 # Custom background images go here
+    my_bg.png             # Your custom 480x222 background
+  boot_frames/            # Custom boot animation frames
+    frame1.png            # Boot animation frame (480x222)
+    frame2.png
+    ...
+```
+
 ### Custom Background
 
-To use a custom background instead of the active Pager theme:
+By default the bootloader uses the active Pineapple Pager UI theme's background. To use your own:
 
 1. Create a 480x222 PNG image
-2. Place it in the bootloader directory (e.g., `images/my_bg.png`)
-3. Set `"bg_image": "images/my_bg.png"` in `launcher_config.json`
+2. Place it in the `images/` directory (e.g., `images/my_bg.png`)
+3. Add `"bg_image": "images/my_bg.png"` to `launcher_config.json`
 4. Optionally set `"show_title": false` if the title is baked into the image
 
 ## Persistent Settings
