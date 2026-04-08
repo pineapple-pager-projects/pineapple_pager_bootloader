@@ -242,7 +242,7 @@ class LauncherMenu:
         self.scroll_offset = 0
         self.sound_enabled = True
         self.category_view = False
-        self.max_visible = 7
+        self.max_visible = 6
 
     def _rgb(self, color):
         return self.pager.rgb(color[0], color[1], color[2])
@@ -274,7 +274,7 @@ class LauncherMenu:
 
         # Menu items — centered, no highlight bar, matching Loki menu style
         item_height = 22
-        start_y = 75
+        start_y = 70
         visible_items = min(self.max_visible, len(self.payloads))
 
         # Keep selected item in view
@@ -332,11 +332,13 @@ class LauncherMenu:
 
             button = self.pager.wait_button()
             if button & self.pager.BTN_UP:
-                selected = (selected - 1) % len(items)
-                self._beep()
+                if selected > 0:
+                    selected -= 1
+                    self._beep()
             elif button & self.pager.BTN_DOWN:
-                selected = (selected + 1) % len(items)
-                self._beep()
+                if selected < len(items) - 1:
+                    selected += 1
+                    self._beep()
             elif button & self.pager.BTN_A:
                 self._beep_select()
                 if items[selected]['path'] == '__back__':
@@ -354,13 +356,15 @@ class LauncherMenu:
         while True:
             button = self.pager.wait_button()
             if button & self.pager.BTN_UP:
-                self.selected = (self.selected - 1) % len(self.payloads)
-                self._beep()
-                self.draw()
+                if self.selected > 0:
+                    self.selected -= 1
+                    self._beep()
+                    self.draw()
             elif button & self.pager.BTN_DOWN:
-                self.selected = (self.selected + 1) % len(self.payloads)
-                self._beep()
-                self.draw()
+                if self.selected < len(self.payloads) - 1:
+                    self.selected += 1
+                    self._beep()
+                    self.draw()
             elif button & self.pager.BTN_A:
                 self._beep_select()
                 return self.payloads[self.selected]
@@ -401,7 +405,7 @@ class LauncherMenu:
                     self.pager.draw_ttf((SCREEN_W - tw) // 2, 28, self.title, title_color, self.title_font, self.title_fs)
 
                 item_height = 22
-                start_y = 75
+                start_y = 70
                 visible = min(self.max_visible, len(menu_items))
 
                 if selected < scroll_offset:
@@ -431,11 +435,13 @@ class LauncherMenu:
 
             button = self.pager.wait_button()
             if button & self.pager.BTN_UP:
-                selected = (selected - 1) % len(menu_items)
-                self._beep()
+                if selected > 0:
+                    selected -= 1
+                    self._beep()
             elif button & self.pager.BTN_DOWN:
-                selected = (selected + 1) % len(menu_items)
-                self._beep()
+                if selected < len(menu_items) - 1:
+                    selected += 1
+                    self._beep()
             elif button & self.pager.BTN_A:
                 self._beep_select()
                 item = menu_items[selected]
@@ -470,7 +476,7 @@ class LauncherMenu:
         self.pager.draw_ttf((SCREEN_W - tw) // 2, 28, title, title_color, self.title_font, self.title_fs)
 
         # Items
-        start_y = 75
+        start_y = 70
         for i, item in enumerate(items):
             y = start_y + i * 22
             color = selected_color if i == selected else unselected_color
@@ -629,11 +635,13 @@ stop_service() {
 
             button = self.pager.wait_button()
             if button & self.pager.BTN_UP:
-                selected = (selected - 1) % num_items
-                self._beep()
+                if selected > 0:
+                    selected -= 1
+                    self._beep()
             elif button & self.pager.BTN_DOWN:
-                selected = (selected + 1) % num_items
-                self._beep()
+                if selected < num_items - 1:
+                    selected += 1
+                    self._beep()
             elif button & self.pager.BTN_LEFT:
                 if selected == 0:
                     brightness = max(5, brightness - 5)
