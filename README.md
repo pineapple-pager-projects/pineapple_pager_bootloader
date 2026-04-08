@@ -43,11 +43,21 @@ When a payload exits, you're returned to the bootloader menu. Select "Exit to Pa
 
 ## Installation
 
-Copy the `pagerctl_bootloader` directory to `/root/payloads/user/general/` on your pager:
+### Option 1: Git Clone
+```
+git clone https://github.com/pineapple-pager-projects/pineapple_pager_bootloader.git pagerctl_bootloader
+scp -r pagerctl_bootloader root@172.16.42.1:/root/payloads/user/general/
+```
 
+### Option 2: Download ZIP
+1. Download the ZIP from GitHub
+2. Extract and rename the folder to `pagerctl_bootloader`
+3. Copy to the pager:
 ```
 scp -r pagerctl_bootloader root@172.16.42.1:/root/payloads/user/general/
 ```
+
+The directory **must** be named `pagerctl_bootloader` on the pager.
 
 ## Controls
 
