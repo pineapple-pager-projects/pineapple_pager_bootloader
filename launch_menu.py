@@ -503,7 +503,7 @@ class LauncherMenu:
                     is_sel = idx == selected
                     color = selected_color if is_sel else unselected_color
                     # Add arrow indicator for categories
-                    label = item['name'] + " >" if item['path'] == '__category__' else item['name']
+                    label = item['name']
                     tw = self.pager.ttf_width(label, self.font, self.item_fs)
                     self.pager.draw_ttf((SCREEN_W - tw) // 2, y, label, color, self.font, self.item_fs)
 
@@ -829,7 +829,8 @@ def main():
             menu._show_message("Restarting...")
             menu.cleanup()
             time.sleep(0.3)
-            menu = LauncherMenu()
+            # Re-exec the process so code changes take effect
+            os.execv(sys.executable, [sys.executable] + sys.argv)
         elif selection['path'] == '__settings__':
             menu.show_settings()
             # Settings returns here — menu object keeps all state
