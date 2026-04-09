@@ -250,6 +250,14 @@ class LauncherMenu:
         # Title
         self.title = self.config.get('title', DEFAULT_TITLE)
         self.show_title = self.config.get('show_title', True)
+        self.show_settings_title = self.config.get('show_settings_title', True)
+        self.show_category_title = self.config.get('show_category_title', True)
+
+        # Per-screen backgrounds (optional overrides)
+        cat_bg = self.config.get('category_bg_image')
+        self.category_bg = resolve_path(cat_bg) if cat_bg and os.path.isfile(resolve_path(cat_bg)) else None
+        settings_bg_cfg = self.config.get('settings_bg_image')
+        self.settings_bg = resolve_path(settings_bg_cfg) if settings_bg_cfg and os.path.isfile(resolve_path(settings_bg_cfg)) else None
         self.title_fs = self.config.get('title_font_size', 28)
         self.item_fs = self.config.get('item_font_size', 18)
 
@@ -366,10 +374,11 @@ class LauncherMenu:
         items = list(payloads) + [{"name": "Back", "path": "__back__"}]
 
         while True:
-            # Draw with scrolling
-            if self.bg_image and os.path.isfile(self.bg_image):
+            # Draw with scrolling — use category bg if set, else main bg
+            bg = self.category_bg or self.bg_image
+            if bg and os.path.isfile(bg):
                 try:
-                    self.pager.draw_image_file_scaled(0, 0, SCREEN_W, SCREEN_H, self.bg_image)
+                    self.pager.draw_image_file_scaled(0, 0, SCREEN_W, SCREEN_H, bg)
                 except Exception:
                     self.pager.clear(self.pager.BLACK)
             else:
@@ -380,7 +389,7 @@ class LauncherMenu:
                 selected_color = self._rgb(self.colors['selected'])
                 unselected_color = self._rgb(self.colors['unselected'])
 
-                if self.show_title:
+                if self.show_category_title:
                     tw = self.pager.ttf_width(category_name, self.title_font, self.title_fs)
                     self.pager.draw_ttf((SCREEN_W - tw) // 2, 28, category_name, title_color, self.title_font, self.title_fs)
 
@@ -706,9 +715,11 @@ stop_service() {
 
     def _draw_settings(self, selected, brightness, boot_enabled):
         """Draw the settings screen with brightness bar."""
-        if self.bg_image and os.path.isfile(self.bg_image):
+        # Use settings bg if set, else main bg
+        bg = self.settings_bg or self.bg_image
+        if bg and os.path.isfile(bg):
             try:
-                self.pager.draw_image_file_scaled(0, 0, SCREEN_W, SCREEN_H, self.bg_image)
+                self.pager.draw_image_file_scaled(0, 0, SCREEN_W, SCREEN_H, bg)
             except Exception:
                 self.pager.clear(self.pager.BLACK)
         else:
@@ -719,12 +730,12 @@ stop_service() {
         unselected_color = self._rgb(self.colors['unselected'])
 
         # Title
-        if self.show_title:
+        if self.show_settings_title:
             tw = self.pager.ttf_width("Settings", self.title_font, self.title_fs)
             self.pager.draw_ttf((SCREEN_W - tw) // 2, 28, "Settings", title_color, self.title_font, self.title_fs)
 
         # Brightness bar (item 0)
-        bar_y = 75
+        bar_y = 82
         bar_x = 100
         bar_w = 280
         bar_h = 14

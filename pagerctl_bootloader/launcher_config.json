@@ -2,7 +2,7 @@
     "title": "Bootloader",
     "title_font": "fonts/title.TTF",
     "font": "fonts/menu.ttf",
-    "title_font_size": 28,
+    "title_font_size": 34,
     "item_font_size": 18,
     "colors": {
         "title": [100, 200, 255],
