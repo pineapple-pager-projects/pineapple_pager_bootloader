@@ -421,13 +421,11 @@ class LauncherMenu:
 
             button = self.pager.wait_button()
             if button & self.pager.BTN_UP:
-                if selected > 0:
-                    selected -= 1
-                    self._beep()
+                selected = (selected - 1) % len(items)
+                self._beep()
             elif button & self.pager.BTN_DOWN:
-                if selected < len(items) - 1:
-                    selected += 1
-                    self._beep()
+                selected = (selected + 1) % len(items)
+                self._beep()
             elif button & self.pager.BTN_A:
                 self._beep_select()
                 if items[selected]['path'] == '__back__':
@@ -445,15 +443,13 @@ class LauncherMenu:
         while True:
             button = self.pager.wait_button()
             if button & self.pager.BTN_UP:
-                if self.selected > 0:
-                    self.selected -= 1
-                    self._beep()
-                    self.draw()
+                self.selected = (self.selected - 1) % len(self.payloads)
+                self._beep()
+                self.draw()
             elif button & self.pager.BTN_DOWN:
-                if self.selected < len(self.payloads) - 1:
-                    self.selected += 1
-                    self._beep()
-                    self.draw()
+                self.selected = (self.selected + 1) % len(self.payloads)
+                self._beep()
+                self.draw()
             elif button & self.pager.BTN_A:
                 self._beep_select()
                 return self.payloads[self.selected]
@@ -525,13 +521,11 @@ class LauncherMenu:
 
             button = self.pager.wait_button()
             if button & self.pager.BTN_UP:
-                if selected > 0:
-                    selected -= 1
-                    self._beep()
+                selected = (selected - 1) % len(menu_items)
+                self._beep()
             elif button & self.pager.BTN_DOWN:
-                if selected < len(menu_items) - 1:
-                    selected += 1
-                    self._beep()
+                selected = (selected + 1) % len(menu_items)
+                self._beep()
             elif button & self.pager.BTN_A:
                 self._beep_select()
                 item = menu_items[selected]
@@ -782,13 +776,11 @@ stop_service() {
 
             button = self.pager.wait_button()
             if button & self.pager.BTN_UP:
-                if selected > 0:
-                    selected -= 1
-                    self._beep()
+                selected = (selected - 1) % num_items
+                self._beep()
             elif button & self.pager.BTN_DOWN:
-                if selected < num_items - 1:
-                    selected += 1
-                    self._beep()
+                selected = (selected + 1) % num_items
+                self._beep()
             elif button & self.pager.BTN_LEFT:
                 if selected == 0:
                     brightness = max(5, brightness - 5)
