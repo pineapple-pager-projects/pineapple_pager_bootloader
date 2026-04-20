@@ -113,9 +113,22 @@ def resolve_path(path):
 SETTINGS_FILE = os.path.join(SCRIPT_DIR, 'settings.json')
 
 
+def _default_auto_boot_path():
+    """On first run, prefer pagerctl_home if it's installed."""
+    candidate = os.path.join(SCRIPT_DIR, 'scripts', 'launch_pagerctl_home.sh')
+    if os.path.isfile(candidate) and os.path.isdir('/root/payloads/user/general/pagerctl_home'):
+        return candidate
+    return None
+
+
 def load_settings():
     """Load persistent settings from disk."""
-    defaults = {'brightness': 80, 'sound_enabled': True, 'category_view': False}
+    defaults = {
+        'brightness': 80,
+        'sound_enabled': True,
+        'category_view': False,
+        'auto_boot_path': None,
+    }
     if os.path.isfile(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r') as f:
@@ -123,6 +136,8 @@ def load_settings():
             defaults.update(saved)
         except Exception:
             pass
+    else:
+        defaults['auto_boot_path'] = _default_auto_boot_path()
     return defaults
 
 
@@ -296,6 +311,7 @@ class LauncherMenu:
         settings = load_settings()
         self.sound_enabled = settings['sound_enabled']
         self.category_view = settings['category_view']
+        self.auto_boot_path = settings.get('auto_boot_path')
 
         # Apply saved brightness
         try:
@@ -577,6 +593,168 @@ class LauncherMenu:
         """Check if bootloader is set to run on boot."""
         return os.path.exists("/etc/rc.d/S16pagerctl_bootloader")
 
+    def _read_launcher_title(self, path):
+        """Return the '# Title:' value from a launcher script, or basename."""
+        try:
+            with open(path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('# Title:'):
+                        return line[len('# Title:'):].strip()
+        except Exception:
+            pass
+        return os.path.splitext(os.path.basename(path))[0]
+
+    def _auto_boot_label(self):
+        if not self.auto_boot_path:
+            return "Auto Boot: OFF"
+        return f"Auto Boot: {self._read_launcher_title(self.auto_boot_path)}"
+
+    def _attempt_auto_boot(self):
+        """If auto_boot_path is set and valid, run a cancelable countdown
+        and return a payload dict to launch. B cancels. Missing target
+        clears the setting and falls through. Returns None to skip."""
+        path = self.auto_boot_path
+        if not path:
+            return None
+        if not os.path.isfile(path):
+            self._show_message("Auto-boot target missing")
+            self.auto_boot_path = None
+            s = load_settings()
+            s['auto_boot_path'] = None
+            save_settings(s)
+            return None
+
+        title = self._read_launcher_title(path)
+        countdown_seconds = 2
+        tick = 0.05
+        total_ticks = int(countdown_seconds / tick)
+
+        try:
+            self.pager.clear_input_events()
+        except Exception:
+            pass
+
+        for i in range(total_ticks):
+            remaining = countdown_seconds - int(i * tick)
+            # Draw countdown screen
+            if self.bg_image and os.path.isfile(self.bg_image):
+                try:
+                    self.pager.draw_image_file_scaled(0, 0, SCREEN_W, SCREEN_H, self.bg_image)
+                except Exception:
+                    self.pager.clear(self.pager.BLACK)
+            else:
+                self.pager.clear(self.pager.BLACK)
+
+            title_color = self._rgb(self.colors['title'])
+            selected_color = self._rgb(self.colors['selected'])
+            unselected_color = self._rgb(self.colors['unselected'])
+
+            header = "Auto Boot"
+            tw = self.pager.ttf_width(header, self.title_font, self.title_fs)
+            self.pager.draw_ttf((SCREEN_W - tw) // 2, 28, header, title_color, self.title_font, self.title_fs)
+
+            line1 = f"Launching: {title}"
+            tw = self.pager.ttf_width(line1, self.font, self.item_fs)
+            self.pager.draw_ttf((SCREEN_W - tw) // 2, 90, line1, selected_color, self.font, self.item_fs)
+
+            line2 = f"in {remaining}s..."
+            tw = self.pager.ttf_width(line2, self.font, self.item_fs)
+            self.pager.draw_ttf((SCREEN_W - tw) // 2, 120, line2, selected_color, self.font, self.item_fs)
+
+            line3 = "B = cancel"
+            tw = self.pager.ttf_width(line3, self.font, self.item_fs)
+            self.pager.draw_ttf((SCREEN_W - tw) // 2, 160, line3, unselected_color, self.font, self.item_fs)
+
+            self.pager.flip()
+
+            try:
+                _, pressed, _ = self.pager.poll_input()
+            except Exception:
+                pressed = 0
+            if pressed & self.pager.BTN_B:
+                self._beep()
+                return None
+            time.sleep(tick)
+
+        return {'name': title, 'path': path}
+
+    def _show_auto_boot_picker(self):
+        """Let user pick which payload auto-boots. Saves immediately on A."""
+        items = [{'name': 'None (disabled)', 'path': None}]
+        for p in discover_payloads():
+            items.append({'name': p['name'], 'path': p['path']})
+
+        # Start on currently-selected entry if present
+        selected = 0
+        for i, it in enumerate(items):
+            if it['path'] == self.auto_boot_path:
+                selected = i
+                break
+        scroll_offset = 0
+        max_vis = self.max_visible
+
+        while True:
+            bg = self.settings_bg or self.bg_image
+            if bg and os.path.isfile(bg):
+                try:
+                    self.pager.draw_image_file_scaled(0, 0, SCREEN_W, SCREEN_H, bg)
+                except Exception:
+                    self.pager.clear(self.pager.BLACK)
+            else:
+                self.pager.clear(self.pager.BLACK)
+
+            title_color = self._rgb(self.colors['title'])
+            selected_color = self._rgb(self.colors['selected'])
+            unselected_color = self._rgb(self.colors['unselected'])
+
+            tw = self.pager.ttf_width("Auto Boot", self.title_font, self.title_fs)
+            self.pager.draw_ttf((SCREEN_W - tw) // 2, 28, "Auto Boot", title_color, self.title_font, self.title_fs)
+
+            item_height = 22
+            start_y = 70
+            visible = min(max_vis, len(items))
+
+            if selected < scroll_offset:
+                scroll_offset = selected
+            elif selected >= scroll_offset + visible:
+                scroll_offset = selected - visible + 1
+
+            for i in range(visible):
+                idx = scroll_offset + i
+                if idx >= len(items):
+                    break
+                y = start_y + i * item_height
+                is_sel = idx == selected
+                color = selected_color if is_sel else unselected_color
+                tw = self.pager.ttf_width(items[idx]['name'], self.font, self.item_fs)
+                self.pager.draw_ttf((SCREEN_W - tw) // 2, y, items[idx]['name'], color, self.font, self.item_fs)
+
+            if scroll_offset > 0:
+                self.pager.draw_ttf(SCREEN_W - 30, start_y, "^", unselected_color, self.font, 14)
+            if scroll_offset + visible < len(items):
+                self.pager.draw_ttf(SCREEN_W - 30, start_y + (visible - 1) * item_height, "v", unselected_color, self.font, 14)
+
+            self.pager.flip()
+
+            button = self.pager.wait_button()
+            if button & self.pager.BTN_UP:
+                selected = (selected - 1) % len(items)
+                self._beep()
+            elif button & self.pager.BTN_DOWN:
+                selected = (selected + 1) % len(items)
+                self._beep()
+            elif button & self.pager.BTN_A:
+                self._beep_select()
+                self.auto_boot_path = items[selected]['path']
+                s = load_settings()
+                s['auto_boot_path'] = self.auto_boot_path
+                save_settings(s)
+                return
+            elif button & self.pager.BTN_B:
+                self._beep()
+                return
+
     def _draw_submenu(self, title, items, selected):
         """Draw a submenu screen matching the main menu style."""
         if self.bg_image and os.path.isfile(self.bg_image):
@@ -668,6 +846,7 @@ start_service() {
     export PATH=/mmc/usr/bin:$PATH
     export PYTHONPATH=$LAUNCHER_DIR/lib:$LAUNCHER_DIR
     export LD_LIBRARY_PATH=/mmc/usr/lib:$LAUNCHER_DIR/lib
+    export PAGERCTL_BOOTLOADER_MODE=boot
     cd $LAUNCHER_DIR
     python3 launch_menu.py &
 }
@@ -786,8 +965,9 @@ stop_service() {
         items_start_y = bar_y + 28
         sound_label = "Sound: ON" if self.sound_enabled else "Sound: OFF"
         cat_label = "Categories: ON" if self.category_view else "Categories: OFF"
+        auto_label = self._auto_boot_label()
         boot_label = "Boot on Start: ON" if boot_enabled else "Boot on Start: OFF"
-        items = [sound_label, cat_label, boot_label]
+        items = [sound_label, cat_label, auto_label, boot_label]
 
         for i, item in enumerate(items):
             y = items_start_y + i * 22
@@ -799,9 +979,9 @@ stop_service() {
         self.pager.flip()
 
     def show_settings(self):
-        """Show the settings submenu with brightness, sound, categories, and boot toggle."""
-        selected = 0  # 0=brightness, 1=sound, 2=categories, 3=boot, 4=back
-        num_items = 4  # brightness + sound + categories + boot
+        """Show the settings submenu with brightness, sound, categories, auto boot, and boot toggle."""
+        selected = 0  # 0=brightness, 1=sound, 2=categories, 3=auto-boot, 4=boot-on-start
+        num_items = 5
         brightness = self.pager.get_brightness()
         if brightness < 0:
             brightness = 80
@@ -821,13 +1001,13 @@ stop_service() {
                 if selected == 0:
                     brightness = max(5, brightness - 5)
                     self.pager.set_brightness(brightness)
-                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view})
+                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path})
                     self._beep()
             elif button & self.pager.BTN_RIGHT:
                 if selected == 0:
                     brightness = min(100, brightness + 5)
                     self.pager.set_brightness(brightness)
-                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view})
+                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path})
                     self._beep()
             elif button & self.pager.BTN_A:
                 if selected == 0:
@@ -835,14 +1015,18 @@ stop_service() {
                 elif selected == 1:
                     # Toggle sound
                     self.sound_enabled = not self.sound_enabled
-                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view})
+                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path})
                     self._beep_select()
                 elif selected == 2:
                     # Toggle category view
                     self.category_view = not self.category_view
-                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view})
+                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path})
                     self._beep_select()
                 elif selected == 3:
+                    # Auto boot picker
+                    self._beep_select()
+                    self._show_auto_boot_picker()
+                elif selected == 4:
                     # Toggle boot
                     self._beep_select()
                     if boot_enabled:
@@ -903,6 +1087,16 @@ def shutdown_pager():
 
 def main():
     menu = LauncherMenu()
+
+    # Auto-boot fires only at cold boot (env var set by init script),
+    # never when the bootloader is launched manually from the pager UI.
+    if os.environ.get('PAGERCTL_BOOTLOADER_MODE') == 'boot':
+        auto = menu._attempt_auto_boot()
+        if auto is not None:
+            menu.cleanup()
+            launch_payload(auto['path'])
+            time.sleep(0.3)
+            menu = LauncherMenu()
 
     while True:
         selection = menu.run()
