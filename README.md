@@ -30,11 +30,14 @@ When a payload exits, you're returned to the bootloader menu. Select "Exit to Pa
 
 ## Features
 
-- Auto-discovers installed payloads from launch scripts
-- Only shows payloads that are actually installed on the device
-- Category view with toggle (groups payloads by type)
+- Auto-discovers installed payloads by scanning `/mmc/root/payloads/user/`
+  for directories containing a `pagerctl.sh` (same discovery rule used by
+  Pagerctl Home — one unified list of payloads across both menus)
+- Shows only payloads that ship a `pagerctl.sh`; classic `payload.sh`-only
+  payloads can be opted back in via **Settings > Classic Payloads: ON**
+- Category view with toggle (groups payloads by their `/payloads/user/<category>/` directory)
 - Scrolling menu with UP/DOWN navigation
-- Settings: brightness control, sound toggle, category view, auto-boot target, boot on start
+- Settings: brightness control, sound toggle, category view, classic-payload visibility, auto-boot target, boot on start
 - All settings persist across reboots
 - Themeable: custom background, fonts, colors
 - Background defaults to the active Pineapple Pager theme
@@ -115,20 +118,33 @@ so the script picks up the `PAGERCTL_BOOTLOADER_MODE` env export).
 
 ## Adding Payloads
 
-Payloads are added by creating a launch script in the `scripts/` directory. The bootloader auto-discovers all `launch_*.sh` scripts and only shows them if the payload is actually installed.
+The bootloader scans `/mmc/root/payloads/user/<category>/<payload>/`
+for directories containing a `pagerctl.sh`. If your payload ships
+one, it shows up in the bootloader menu automatically — no launch
+script to maintain.
 
-### Creating a Launch Script
+This matches how Pagerctl Home discovers payloads, so both menus
+always show the same list.
 
-Create a file in `scripts/` named `launch_yourpayload.sh`:
+### The `pagerctl.sh` contract
+
+`pagerctl.sh` is a short shell script that sets up the environment
+and execs the payload's real entry point. The bootloader (or
+Pagerctl Home) has already torn the pager down and stopped the
+Pineapple Pager service before calling it, so the script doesn't
+need to manage that lifecycle — it just runs.
+
+Minimum example:
 
 ```sh
 #!/bin/sh
 # Title: My Payload
-# Requires: /root/payloads/user/category/mypayload
+# Description: Short one-liner shown on the launch screen
+# Author: your_name
+# Version: 1.0
 # Category: Reconnaissance
-# Direct launcher — bypasses duckyscript commands
 
-PAYLOAD_DIR="/root/payloads/user/category/mypayload"
+PAYLOAD_DIR="/root/payloads/user/reconnaissance/mypayload"
 
 cd "$PAYLOAD_DIR" || exit 1
 
@@ -136,52 +152,58 @@ export PATH="/mmc/usr/bin:$PAYLOAD_DIR/bin:$PATH"
 export PYTHONPATH="$PAYLOAD_DIR/lib:$PAYLOAD_DIR:$PYTHONPATH"
 export LD_LIBRARY_PATH="/mmc/usr/lib:$PAYLOAD_DIR/lib:$LD_LIBRARY_PATH"
 
-/etc/init.d/pineapplepager stop 2>/dev/null
-sleep 0.3
-
 python3 main.py
-
 exit 0
 ```
 
-### Required Metadata
+### Header metadata
 
 | Tag | Required | Description |
 |-----|----------|-------------|
-| `# Title:` | Yes | Display name shown in the menu |
-| `# Requires:` | Yes | Path to the payload directory — if this directory doesn't exist, the payload is hidden from the menu |
-| `# Category:` | No | Category for grouped view (defaults to "Other"). Examples: `Reconnaissance`, `Games`, `Utilities` |
+| `# Title:` | Recommended | Display name shown in the menu. Defaults to the payload directory name if absent. |
+| `# Category:` | No | Overrides the display category (defaults to the parent directory name, title-cased). |
+| `# Description:`, `# Author:`, `# Version:` | No | Used by Pagerctl Home's launch dialog. The bootloader ignores them. |
 
-### Why Launch Scripts?
+### Classic `payload.sh` payloads
 
-The Pineapple Pager normally runs `payload.sh` through its duckyscript engine, which provides commands like `LOG`, `WAIT_FOR_INPUT`, `START_SPINNER`, etc. These don't exist when running from the bootloader since the Pager service is stopped.
-
-Launch scripts bypass all duckyscript commands and go straight to the payload's Python or binary entry point with the correct environment variables set.
+Classic `payload.sh`-only payloads are hidden by default. Turn
+**Settings > Classic Payloads: ON** to include them — the bootloader
+will then list any payload directory that ships only a `payload.sh`.
+Classic payloads rely on the Pineapple Pager's duckyscript engine
+(`LOG`, `WAIT_FOR_INPUT`, `START_SPINNER`, etc.), which is **not
+available** while the bootloader is running, so they may not work
+correctly. For reliable integration, ship a `pagerctl.sh`.
 
 ### For C/Binary Payloads
 
-If the payload is a compiled binary instead of Python:
+Same contract — `pagerctl.sh` just execs the binary instead:
 
 ```sh
 #!/bin/sh
 # Title: My Game
-# Requires: /root/payloads/user/games/mygame
+# Description: Arcade game
+# Author: your_name
+# Version: 1.0
 # Category: Games
 
 PAYLOAD_DIR="/root/payloads/user/games/mygame"
 
 cd "$PAYLOAD_DIR" || exit 1
-
 export LD_LIBRARY_PATH="/mmc/usr/lib:$PAYLOAD_DIR:$LD_LIBRARY_PATH"
-
-/etc/init.d/pineapplepager stop 2>/dev/null
-sleep 0.3
-
 chmod +x ./mygame 2>/dev/null
 ./mygame
 
 exit 0
 ```
+
+### Legacy launch scripts
+
+Earlier versions of the bootloader discovered payloads by scanning
+its own `scripts/` directory for `launch_*.sh` files. That path is
+deprecated; the bootloader now scans `/mmc/root/payloads/user/`
+directly. The `scripts/` directory may still contain launcher
+shims for payloads that haven't been updated, but new payloads
+should ship a `pagerctl.sh` in their own directory instead.
 
 ## Theming
 

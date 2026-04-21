@@ -114,10 +114,15 @@ SETTINGS_FILE = os.path.join(SCRIPT_DIR, 'settings.json')
 
 
 def _default_auto_boot_path():
-    """On first run, prefer pagerctl_home if it's installed."""
-    candidate = os.path.join(SCRIPT_DIR, 'scripts', 'launch_pagerctl_home.sh')
-    if os.path.isfile(candidate) and os.path.isdir('/root/payloads/user/general/pagerctl_home'):
-        return candidate
+    """On first run, prefer pagerctl_home if it's installed. Point at
+    its pagerctl.sh if present, else fall back to payload.sh."""
+    home_dir = '/root/payloads/user/general/pagerctl_home'
+    if not os.path.isdir(home_dir):
+        return None
+    for name in ('pagerctl.sh', 'payload.sh'):
+        p = os.path.join(home_dir, name)
+        if os.path.isfile(p):
+            return p
     return None
 
 
@@ -128,6 +133,7 @@ def load_settings():
         'sound_enabled': True,
         'category_view': False,
         'auto_boot_path': None,
+        'show_classic_payloads': False,
     }
     if os.path.isfile(SETTINGS_FILE):
         try:
@@ -153,51 +159,81 @@ def save_settings(settings):
 # ---------------------------------------------------------------------------
 # Payload discovery
 # ---------------------------------------------------------------------------
+PAYLOADS_ROOT = '/mmc/root/payloads/user'
+
+# Payloads that would fight us for the display if launched from the
+# menu — the bootloader itself is already running. pagerctl_home is
+# fine to launch from here (that's a common use case) so only the
+# bootloader is excluded.
+HIDDEN_PAYLOADS = frozenset({'pagerctl_bootloader'})
+
+
+def _parse_header(script_path):
+    """Read '# Title:' / '# Category:' from a payload entry script."""
+    title = None
+    category = None
+    try:
+        with open(script_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or not line.startswith('#'):
+                    if line and not line.startswith('#') and title:
+                        break
+                    continue
+                if line.startswith('# Title:'):
+                    title = line[len('# Title:'):].strip()
+                elif line.startswith('# Category:'):
+                    category = line[len('# Category:'):].strip()
+                if title and category:
+                    break
+    except Exception:
+        pass
+    return title, category
+
+
 def discover_payloads():
-    """Scan scripts/ directory for launch scripts.
-    Each script must have:
-        # Title: Display Name
-        # Requires: /path/to/payload/directory
-        # Category: Category Name (optional, defaults to "Other")
-    Only shows payloads where the Requires directory exists (payload is installed)."""
+    """Scan /mmc/root/payloads/user/<category>/<payload>/ for installed
+    payloads. Each payload dir is expected to ship a pagerctl.sh
+    (pagerctl-native launcher) — that's the supported path. A classic
+    payload.sh is only included when Settings > Show Classic Payloads
+    is enabled. Matches pagerctl_home's payload_browser behavior so
+    both menus show the same entries."""
     payloads = []
-    scripts_dir = os.path.join(SCRIPT_DIR, 'scripts')
-    if not os.path.isdir(scripts_dir):
+    if not os.path.isdir(PAYLOADS_ROOT):
         return payloads
 
-    for filename in sorted(os.listdir(scripts_dir)):
-        if not filename.startswith('launch_') or not filename.endswith('.sh'):
-            continue
-        script_path = os.path.join(scripts_dir, filename)
-        if not os.path.isfile(script_path):
-            continue
+    show_classic = bool(load_settings().get('show_classic_payloads', False))
 
-        title = None
-        requires = None
-        category = "Other"
-        try:
-            with open(script_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith('# Title:'):
-                        title = line[len('# Title:'):].strip()
-                    elif line.startswith('# Requires:'):
-                        requires = line[len('# Requires:'):].strip()
-                    elif line.startswith('# Category:'):
-                        category = line[len('# Category:'):].strip()
-                    if title and requires and category != "Other":
-                        break
-        except Exception:
+    for cat_name in sorted(os.listdir(PAYLOADS_ROOT)):
+        cat_path = os.path.join(PAYLOADS_ROOT, cat_name)
+        if not os.path.isdir(cat_path):
             continue
+        category_display = cat_name.replace('_', ' ').title()
+        for entry in sorted(os.listdir(cat_path)):
+            if entry in HIDDEN_PAYLOADS:
+                continue
+            payload_dir = os.path.join(cat_path, entry)
+            if not os.path.isdir(payload_dir):
+                continue
 
-        if not title:
-            continue
+            pagerctl_sh = os.path.join(payload_dir, 'pagerctl.sh')
+            payload_sh = os.path.join(payload_dir, 'payload.sh')
+            if os.path.isfile(pagerctl_sh):
+                script_path = pagerctl_sh
+            elif show_classic and os.path.isfile(payload_sh):
+                script_path = payload_sh
+            else:
+                continue
 
-        # Only add if the required payload directory exists
-        if requires and not os.path.isdir(requires):
-            continue
+            title, cat_override = _parse_header(script_path)
+            title = title or entry
+            category = cat_override or category_display
 
-        payloads.append({'name': title, 'path': script_path, 'category': category})
+            payloads.append({
+                'name': title,
+                'path': script_path,
+                'category': category,
+            })
 
     return payloads
 
@@ -312,6 +348,7 @@ class LauncherMenu:
         self.sound_enabled = settings['sound_enabled']
         self.category_view = settings['category_view']
         self.auto_boot_path = settings.get('auto_boot_path')
+        self.show_classic_payloads = bool(settings.get('show_classic_payloads', False))
 
         # Apply saved brightness
         try:
@@ -975,9 +1012,11 @@ stop_service() {
         items_start_y = bar_y + 28
         sound_label = "Sound: ON" if self.sound_enabled else "Sound: OFF"
         cat_label = "Categories: ON" if self.category_view else "Categories: OFF"
+        classic_label = ("Classic Payloads: ON" if self.show_classic_payloads
+                         else "Classic Payloads: OFF")
         auto_label = self._auto_boot_label()
         boot_label = "Boot on Start: ON" if boot_enabled else "Boot on Start: OFF"
-        items = [sound_label, cat_label, auto_label, boot_label]
+        items = [sound_label, cat_label, classic_label, auto_label, boot_label]
 
         for i, item in enumerate(items):
             y = items_start_y + i * 22
@@ -989,9 +1028,10 @@ stop_service() {
         self.pager.flip()
 
     def show_settings(self):
-        """Show the settings submenu with brightness, sound, categories, auto boot, and boot toggle."""
-        selected = 0  # 0=brightness, 1=sound, 2=categories, 3=auto-boot, 4=boot-on-start
-        num_items = 5
+        """Show the settings submenu with brightness, sound, categories,
+        classic-payloads toggle, auto boot, and boot toggle."""
+        selected = 0  # 0=brightness, 1=sound, 2=categories, 3=classic, 4=auto-boot, 5=boot-on-start
+        num_items = 6
         brightness = self.pager.get_brightness()
         if brightness < 0:
             brightness = 80
@@ -1011,13 +1051,13 @@ stop_service() {
                 if selected == 0:
                     brightness = max(5, brightness - 5)
                     self.pager.set_brightness(brightness)
-                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path})
+                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path, 'show_classic_payloads': self.show_classic_payloads})
                     self._beep()
             elif button & self.pager.BTN_RIGHT:
                 if selected == 0:
                     brightness = min(100, brightness + 5)
                     self.pager.set_brightness(brightness)
-                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path})
+                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path, 'show_classic_payloads': self.show_classic_payloads})
                     self._beep()
             elif button & self.pager.BTN_A:
                 if selected == 0:
@@ -1025,18 +1065,23 @@ stop_service() {
                 elif selected == 1:
                     # Toggle sound
                     self.sound_enabled = not self.sound_enabled
-                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path})
+                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path, 'show_classic_payloads': self.show_classic_payloads})
                     self._beep_select()
                 elif selected == 2:
                     # Toggle category view
                     self.category_view = not self.category_view
-                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path})
+                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path, 'show_classic_payloads': self.show_classic_payloads})
                     self._beep_select()
                 elif selected == 3:
+                    # Toggle classic payload visibility
+                    self.show_classic_payloads = not self.show_classic_payloads
+                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path, 'show_classic_payloads': self.show_classic_payloads})
+                    self._beep_select()
+                elif selected == 4:
                     # Auto boot picker
                     self._beep_select()
                     self._show_auto_boot_picker()
-                elif selected == 4:
+                elif selected == 5:
                     # Toggle boot
                     self._beep_select()
                     if boot_enabled:
