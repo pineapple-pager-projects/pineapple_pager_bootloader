@@ -34,7 +34,7 @@ When a payload exits, you're returned to the bootloader menu. Select "Exit to Pa
 - Only shows payloads that are actually installed on the device
 - Category view with toggle (groups payloads by type)
 - Scrolling menu with UP/DOWN navigation
-- Settings: brightness control, sound toggle, category view, boot on start
+- Settings: brightness control, sound toggle, category view, auto-boot target, boot on start
 - All settings persist across reboots
 - Themeable: custom background, fonts, colors
 - Background defaults to the active Pineapple Pager theme
@@ -65,6 +65,53 @@ Enable in **Settings > Boot on Start: ON** to have the bootloader run automatica
 When enabled, the bootloader installs an init script that runs before the Pineapple Pager service. Select "Exit to Pager UI" at any time to start the normal interface.
 
 Disable with **Settings > Boot on Start: OFF** to restore normal boot behavior.
+
+## Auto-Boot a Payload (Pagerctl Home etc.)
+
+The bootloader can launch any installed payload automatically at cold
+boot — useful for booting straight into **Pagerctl Home** so the pager
+comes up in the custom home screen instead of the bootloader menu.
+
+Enable in **Settings > Auto Boot**. The picker lists "None (disabled)"
+plus every installed payload discovered from `scripts/`. Pick the one
+you want and save.
+
+On the next cold boot, you'll see a 2-second countdown:
+
+```
+Auto Boot
+Launching: Pagerctl Home
+in 2s...
+B = cancel
+```
+
+Press **B** during the countdown to skip and drop into the bootloader
+menu instead (handy for recovery if something goes wrong). Otherwise
+the configured target launches. When the launched payload exits, the
+bootloader comes back to the normal menu — auto-boot only fires once
+per cold boot, not in a loop.
+
+### Guarantees and safety
+
+- **Only at cold boot.** The init script exports
+  `PAGERCTL_BOOTLOADER_MODE=boot`; auto-boot only fires when that env
+  var is set. Manual launches from the Pineapple Pager UI always show
+  the menu.
+- **Target validation.** If the configured target script is missing
+  (uninstalled payload, renamed file, etc.) the bootloader shows an
+  "Auto-boot target missing" message, clears the setting, and falls
+  through to the menu. You won't get stuck.
+- **First-run default.** On a fresh install, if `pagerctl_home` is
+  already present the auto-boot target defaults to it. Otherwise it
+  defaults to off.
+
+### Requires "Boot on Start"
+
+Auto-boot piggybacks on the Boot-on-Start init script, so you need
+**Settings > Boot on Start: ON**. If you toggle Boot on Start off and
+back on after updating the bootloader, you'll regenerate the init
+script (needed the first time after installing the auto-boot feature,
+so the script picks up the `PAGERCTL_BOOTLOADER_MODE` env export).
 
 ## Adding Payloads
 

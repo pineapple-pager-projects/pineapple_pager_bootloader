@@ -627,46 +627,24 @@ class LauncherMenu:
 
         title = self._read_launcher_title(path)
         countdown_seconds = 2
-        tick = 0.05
-        total_ticks = int(countdown_seconds / tick)
 
         try:
             self.pager.clear_input_events()
         except Exception:
             pass
 
-        for i in range(total_ticks):
-            remaining = countdown_seconds - int(i * tick)
-            # Draw countdown screen
-            if self.bg_image and os.path.isfile(self.bg_image):
-                try:
-                    self.pager.draw_image_file_scaled(0, 0, SCREEN_W, SCREEN_H, self.bg_image)
-                except Exception:
-                    self.pager.clear(self.pager.BLACK)
-            else:
-                self.pager.clear(self.pager.BLACK)
+        start = time.time()
+        deadline = start + countdown_seconds
+        last_shown = None
 
-            title_color = self._rgb(self.colors['title'])
-            selected_color = self._rgb(self.colors['selected'])
-            unselected_color = self._rgb(self.colors['unselected'])
-
-            header = "Auto Boot"
-            tw = self.pager.ttf_width(header, self.title_font, self.title_fs)
-            self.pager.draw_ttf((SCREEN_W - tw) // 2, 28, header, title_color, self.title_font, self.title_fs)
-
-            line1 = f"Launching: {title}"
-            tw = self.pager.ttf_width(line1, self.font, self.item_fs)
-            self.pager.draw_ttf((SCREEN_W - tw) // 2, 90, line1, selected_color, self.font, self.item_fs)
-
-            line2 = f"in {remaining}s..."
-            tw = self.pager.ttf_width(line2, self.font, self.item_fs)
-            self.pager.draw_ttf((SCREEN_W - tw) // 2, 120, line2, selected_color, self.font, self.item_fs)
-
-            line3 = "B = cancel"
-            tw = self.pager.ttf_width(line3, self.font, self.item_fs)
-            self.pager.draw_ttf((SCREEN_W - tw) // 2, 160, line3, unselected_color, self.font, self.item_fs)
-
-            self.pager.flip()
+        while True:
+            remaining_f = deadline - time.time()
+            if remaining_f <= 0:
+                break
+            remaining = int(remaining_f) + 1  # ceil for friendly countdown
+            if remaining != last_shown:
+                self._draw_auto_boot_screen(title, remaining)
+                last_shown = remaining
 
             try:
                 _, pressed, _ = self.pager.poll_input()
@@ -675,9 +653,41 @@ class LauncherMenu:
             if pressed & self.pager.BTN_B:
                 self._beep()
                 return None
-            time.sleep(tick)
+            time.sleep(0.05)
 
         return {'name': title, 'path': path}
+
+    def _draw_auto_boot_screen(self, title, remaining):
+        """Render one frame of the auto-boot countdown."""
+        if self.bg_image and os.path.isfile(self.bg_image):
+            try:
+                self.pager.draw_image_file_scaled(0, 0, SCREEN_W, SCREEN_H, self.bg_image)
+            except Exception:
+                self.pager.clear(self.pager.BLACK)
+        else:
+            self.pager.clear(self.pager.BLACK)
+
+        title_color = self._rgb(self.colors['title'])
+        selected_color = self._rgb(self.colors['selected'])
+        unselected_color = self._rgb(self.colors['unselected'])
+
+        header = "Auto Boot"
+        tw = self.pager.ttf_width(header, self.title_font, self.title_fs)
+        self.pager.draw_ttf((SCREEN_W - tw) // 2, 28, header, title_color, self.title_font, self.title_fs)
+
+        line1 = f"Launching: {title}"
+        tw = self.pager.ttf_width(line1, self.font, self.item_fs)
+        self.pager.draw_ttf((SCREEN_W - tw) // 2, 90, line1, selected_color, self.font, self.item_fs)
+
+        line2 = f"in {remaining}s..."
+        tw = self.pager.ttf_width(line2, self.font, self.item_fs)
+        self.pager.draw_ttf((SCREEN_W - tw) // 2, 120, line2, selected_color, self.font, self.item_fs)
+
+        line3 = "B = cancel"
+        tw = self.pager.ttf_width(line3, self.font, self.item_fs)
+        self.pager.draw_ttf((SCREEN_W - tw) // 2, 160, line3, unselected_color, self.font, self.item_fs)
+
+        self.pager.flip()
 
     def _show_auto_boot_picker(self):
         """Let user pick which payload auto-boots. Saves immediately on A."""
