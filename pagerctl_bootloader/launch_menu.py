@@ -134,6 +134,11 @@ def load_settings():
         'category_view': False,
         'auto_boot_path': None,
         'show_classic_payloads': False,
+        # Fast boot skips the "wait for services to settle" pause
+        # before launching the auto-boot payload. Off by default so
+        # new users don't hit the 30-45s of background init that
+        # makes games feel sluggish on first launch.
+        'fast_boot': False,
     }
     if os.path.isfile(SETTINGS_FILE):
         try:
@@ -349,6 +354,7 @@ class LauncherMenu:
         self.category_view = settings['category_view']
         self.auto_boot_path = settings.get('auto_boot_path')
         self.show_classic_payloads = bool(settings.get('show_classic_payloads', False))
+        self.fast_boot = bool(settings.get('fast_boot', False))
 
         # Apply saved brightness
         try:
@@ -647,6 +653,22 @@ class LauncherMenu:
             return "Auto Boot: OFF"
         return f"Auto Boot: {self._read_launcher_title(self.auto_boot_path)}"
 
+    def _save_current_settings(self, **overrides):
+        """Persist every field the settings screens can mutate. Takes
+        optional overrides so individual handlers can update a single
+        value without rebuilding the whole dict inline."""
+        data = {
+            'brightness': overrides.get('brightness',
+                                         self.pager.get_brightness()),
+            'sound_enabled': self.sound_enabled,
+            'category_view': self.category_view,
+            'auto_boot_path': self.auto_boot_path,
+            'show_classic_payloads': self.show_classic_payloads,
+            'fast_boot': self.fast_boot,
+        }
+        data.update(overrides)
+        save_settings(data)
+
     def _attempt_auto_boot(self):
         """If auto_boot_path is set and valid, run a cancelable countdown
         and return a payload dict to launch. B cancels. Missing target
@@ -692,7 +714,105 @@ class LauncherMenu:
                 return None
             time.sleep(0.05)
 
+        # Fast Boot OFF: after the countdown, hold on the "warming up"
+        # screen while background services finish coming up. Makes the
+        # 30-45s of first-boot sluggishness visible and controlled
+        # instead of the user feeling that the game is frozen.
+        if not self.fast_boot:
+            self._wait_for_services_ready()
+
         return {'name': title, 'path': path}
+
+    # Ordered check list for the readiness wait. Each entry is a tuple
+    # (label, check_fn). First check that fails is what we report on
+    # the progress screen so the user sees which service they're
+    # waiting on. Kept short so any single check doesn't dominate the
+    # timeout.
+    _READINESS_CHECKS = (
+        ('network', lambda: os.path.exists('/sys/class/net/br-lan/operstate')),
+        ('wireless', lambda: os.path.exists('/sys/class/net/wlan0')),
+        ('hostapd', lambda: subprocess.run(
+            ['pgrep', '-x', 'hostapd'], capture_output=True).returncode == 0),
+    )
+
+    def _services_ready(self):
+        """Return (ready, current_step_label). ready=True when all
+        checks pass. When False, label names the step we're blocked
+        on — shown under the progress bar."""
+        for label, check in self._READINESS_CHECKS:
+            try:
+                if not check():
+                    return False, label
+            except Exception:
+                return False, label
+        return True, 'ready'
+
+    def _wait_for_services_ready(self, timeout=45):
+        """Poll readiness checks with a visible progress bar. Bails
+        after `timeout` seconds even if not everything came up —
+        better to launch a slightly-slow game than hang forever on a
+        quirky boot."""
+        start = time.time()
+        last_drawn = -1
+        while True:
+            elapsed = time.time() - start
+            ready, step = self._services_ready()
+            if ready or elapsed >= timeout:
+                return
+            progress = min(1.0, elapsed / timeout)
+            # Only redraw when the percentage advances a visible step
+            # so we don't burn CPU on the wait screen itself.
+            pct = int(progress * 100)
+            if pct != last_drawn:
+                self._draw_services_screen(step, pct)
+                last_drawn = pct
+            try:
+                _, pressed, _ = self.pager.poll_input()
+            except Exception:
+                pressed = 0
+            if pressed & self.pager.BTN_B:
+                # Cancel = launch now anyway. Same effect as Fast Boot
+                # but ad-hoc for one boot.
+                return
+            time.sleep(0.2)
+
+    def _draw_services_screen(self, step, pct):
+        """Progress bar screen shown while waiting for services."""
+        if self.bg_image and os.path.isfile(self.bg_image):
+            try:
+                self.pager.draw_image_file_scaled(0, 0, SCREEN_W, SCREEN_H, self.bg_image)
+            except Exception:
+                self.pager.clear(self.pager.BLACK)
+        else:
+            self.pager.clear(self.pager.BLACK)
+        title_color = self._rgb(self.colors['title'])
+        selected_color = self._rgb(self.colors['selected'])
+        unselected_color = self._rgb(self.colors['unselected'])
+
+        header = "Warming up services..."
+        tw = self.pager.ttf_width(header, self.title_font, self.title_fs)
+        self.pager.draw_ttf((SCREEN_W - tw) // 2, 40, header,
+                             title_color, self.title_font, self.title_fs)
+
+        bar_x = 60
+        bar_y = 110
+        bar_w = 360
+        bar_h = 18
+        self.pager.fill_rect(bar_x, bar_y, bar_w, bar_h, self._rgb([40, 40, 40]))
+        fill_w = int(bar_w * pct / 100)
+        self.pager.fill_rect(bar_x, bar_y, fill_w, bar_h, selected_color)
+        self.pager.rect(bar_x, bar_y, bar_w, bar_h, unselected_color)
+
+        step_line = f"waiting for {step}  ({pct}%)"
+        tw = self.pager.ttf_width(step_line, self.font, self.item_fs)
+        self.pager.draw_ttf((SCREEN_W - tw) // 2, bar_y + bar_h + 14,
+                             step_line, selected_color, self.font, self.item_fs)
+
+        hint = "B = skip"
+        tw = self.pager.ttf_width(hint, self.font, self.item_fs)
+        self.pager.draw_ttf((SCREEN_W - tw) // 2, bar_y + bar_h + 42,
+                             hint, unselected_color, self.font, self.item_fs)
+        self.pager.flip()
 
     def _draw_auto_boot_screen(self, title, remaining):
         """Render one frame of the auto-boot countdown."""
@@ -723,6 +843,16 @@ class LauncherMenu:
         line3 = "B = cancel"
         tw = self.pager.ttf_width(line3, self.font, self.item_fs)
         self.pager.draw_ttf((SCREEN_W - tw) // 2, 160, line3, unselected_color, self.font, self.item_fs)
+
+        # When Fast Boot is on the launch fires before services have
+        # finished coming up — warn so the user doesn't misread the
+        # first-minute sluggishness as a crash.
+        if self.fast_boot:
+            warn_color = self._rgb(self.colors.get('warning', [255, 180, 60]))
+            warn = "Fast Boot: perf may be reduced 30-45s"
+            tw = self.pager.ttf_width(warn, self.font, self.item_fs)
+            self.pager.draw_ttf((SCREEN_W - tw) // 2, 190, warn,
+                                 warn_color, self.font, self.item_fs)
 
         self.pager.flip()
 
@@ -1014,9 +1144,8 @@ stop_service() {
         cat_label = "Categories: ON" if self.category_view else "Categories: OFF"
         classic_label = ("Classic Payloads: ON" if self.show_classic_payloads
                          else "Classic Payloads: OFF")
-        auto_label = self._auto_boot_label()
-        boot_label = "Boot on Start: ON" if boot_enabled else "Boot on Start: OFF"
-        items = [sound_label, cat_label, classic_label, auto_label, boot_label]
+        auto_label = "Auto Boot..."
+        items = [sound_label, cat_label, classic_label, auto_label]
 
         for i, item in enumerate(items):
             y = items_start_y + i * 22
@@ -1028,10 +1157,10 @@ stop_service() {
         self.pager.flip()
 
     def show_settings(self):
-        """Show the settings submenu with brightness, sound, categories,
-        classic-payloads toggle, auto boot, and boot toggle."""
-        selected = 0  # 0=brightness, 1=sound, 2=categories, 3=classic, 4=auto-boot, 5=boot-on-start
-        num_items = 6
+        """Show the settings submenu. Auto-boot related toggles live
+        one level deeper — see _show_autoboot_submenu."""
+        selected = 0  # 0=brightness, 1=sound, 2=categories, 3=classic, 4=auto-boot submenu
+        num_items = 5
         brightness = self.pager.get_brightness()
         if brightness < 0:
             brightness = 80
@@ -1051,52 +1180,162 @@ stop_service() {
                 if selected == 0:
                     brightness = max(5, brightness - 5)
                     self.pager.set_brightness(brightness)
-                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path, 'show_classic_payloads': self.show_classic_payloads})
+                    self._save_current_settings(brightness=brightness)
                     self._beep()
             elif button & self.pager.BTN_RIGHT:
                 if selected == 0:
                     brightness = min(100, brightness + 5)
                     self.pager.set_brightness(brightness)
-                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path, 'show_classic_payloads': self.show_classic_payloads})
+                    self._save_current_settings(brightness=brightness)
                     self._beep()
             elif button & self.pager.BTN_A:
                 if selected == 0:
                     pass  # Brightness uses left/right
                 elif selected == 1:
-                    # Toggle sound
                     self.sound_enabled = not self.sound_enabled
-                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path, 'show_classic_payloads': self.show_classic_payloads})
+                    self._save_current_settings(brightness=brightness)
                     self._beep_select()
                 elif selected == 2:
-                    # Toggle category view
                     self.category_view = not self.category_view
-                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path, 'show_classic_payloads': self.show_classic_payloads})
+                    self._save_current_settings(brightness=brightness)
                     self._beep_select()
                 elif selected == 3:
-                    # Toggle classic payload visibility
                     self.show_classic_payloads = not self.show_classic_payloads
-                    save_settings({'brightness': brightness, 'sound_enabled': self.sound_enabled, 'category_view': self.category_view, 'auto_boot_path': self.auto_boot_path, 'show_classic_payloads': self.show_classic_payloads})
+                    self._save_current_settings(brightness=brightness)
                     self._beep_select()
                 elif selected == 4:
-                    # Auto boot picker
                     self._beep_select()
-                    self._show_auto_boot_picker()
-                elif selected == 5:
-                    # Toggle boot
-                    self._beep_select()
+                    self._show_autoboot_submenu(brightness)
+            elif button & self.pager.BTN_B:
+                self._beep()
+                return
+
+    def _draw_autoboot_submenu(self, selected, boot_enabled):
+        """Render the Auto Boot submenu. Three rows: toggle for whether
+        the bootloader runs at all on power-on, picker for the program
+        it auto-launches, and Fast Boot toggle."""
+        bg = self.settings_bg or self.bg_image
+        if bg and os.path.isfile(bg):
+            try:
+                self.pager.draw_image_file_scaled(0, 0, SCREEN_W, SCREEN_H, bg)
+            except Exception:
+                self.pager.clear(self.pager.BLACK)
+        else:
+            self.pager.clear(self.pager.BLACK)
+
+        title_color = self._rgb(self.colors['title'])
+        selected_color = self._rgb(self.colors['selected'])
+        unselected_color = self._rgb(self.colors['unselected'])
+
+        if self.show_settings_title:
+            tw = self.pager.ttf_width("Auto Boot", self.title_font, self.title_fs)
+            self.pager.draw_ttf((SCREEN_W - tw) // 2, 28, "Auto Boot",
+                                 title_color, self.title_font, self.title_fs)
+
+        autostart_label = ("Autostart Bootloader: ON" if boot_enabled
+                            else "Autostart Bootloader: OFF")
+        program_label = f"Autostart Program: {self._read_launcher_title(self.auto_boot_path)}" \
+            if self.auto_boot_path else "Autostart Program: None"
+        fast_label = "Fast Boot: ON" if self.fast_boot else "Fast Boot: OFF"
+        items = [autostart_label, program_label, fast_label]
+
+        items_start_y = 82
+        for i, item in enumerate(items):
+            y = items_start_y + i * 28
+            color = selected_color if i == selected else unselected_color
+            tw = self.pager.ttf_width(item, self.font, self.item_fs)
+            self.pager.draw_ttf((SCREEN_W - tw) // 2, y, item,
+                                 color, self.font, self.item_fs)
+
+        self.pager.flip()
+
+    def _show_autoboot_submenu(self, brightness):
+        """Submenu for autostart + fast-boot toggles. Brightness is
+        passed through so the shared _save_current_settings snapshot
+        persists the live value rather than re-reading from hardware."""
+        selected = 0
+        num_items = 3
+        while True:
+            boot_enabled = self._is_boot_enabled()
+            self._draw_autoboot_submenu(selected, boot_enabled)
+            button = self.pager.wait_button()
+            if button & self.pager.BTN_UP:
+                selected = (selected - 1) % num_items
+                self._beep()
+            elif button & self.pager.BTN_DOWN:
+                selected = (selected + 1) % num_items
+                self._beep()
+            elif button & self.pager.BTN_A:
+                self._beep_select()
+                if selected == 0:
+                    # Autostart Bootloader — install / uninstall the
+                    # START=16 symlink. _install_boot / _uninstall_boot
+                    # already handle the symlink + disable pineapplepager.
                     if boot_enabled:
                         if self._uninstall_boot():
-                            self._show_message("Boot disabled")
+                            self._show_message("Autostart disabled")
                         else:
                             self._show_message("Failed to disable")
                     else:
                         if self._install_boot():
-                            self._show_message("Boot enabled")
+                            self._show_message("Autostart enabled")
                         else:
                             self._show_message("Failed to enable")
+                elif selected == 1:
+                    self._show_auto_boot_picker()
+                    self._save_current_settings(brightness=brightness)
+                elif selected == 2:
+                    new_val = not self.fast_boot
+                    # Show the performance warning only when turning
+                    # ON — turning OFF just re-enables the safe default.
+                    if new_val and not self._confirm_fast_boot():
+                        continue
+                    self.fast_boot = new_val
+                    self._save_current_settings(brightness=brightness)
             elif button & self.pager.BTN_B:
                 self._beep()
                 return
+
+    def _confirm_fast_boot(self):
+        """Warn the user before enabling Fast Boot. Returns True if
+        they press A to confirm, False on B. Keeps the warning on screen
+        until acknowledged so it can't be dismissed accidentally."""
+        lines = [
+            "Fast Boot enabled.",
+            "Warning: may have performance",
+            "issues for the first 30-45",
+            "seconds while services start.",
+            "",
+            "A = enable   B = cancel",
+        ]
+        bg = self.settings_bg or self.bg_image
+        if bg and os.path.isfile(bg):
+            try:
+                self.pager.draw_image_file_scaled(0, 0, SCREEN_W, SCREEN_H, bg)
+            except Exception:
+                self.pager.clear(self.pager.BLACK)
+        else:
+            self.pager.clear(self.pager.BLACK)
+        title_color = self._rgb(self.colors['title'])
+        selected_color = self._rgb(self.colors['selected'])
+        unselected_color = self._rgb(self.colors['unselected'])
+        tw = self.pager.ttf_width("Fast Boot", self.title_font, self.title_fs)
+        self.pager.draw_ttf((SCREEN_W - tw) // 2, 22, "Fast Boot",
+                             title_color, self.title_font, self.title_fs)
+        y = 70
+        for i, line in enumerate(lines):
+            color = selected_color if i == 0 else unselected_color
+            tw = self.pager.ttf_width(line, self.font, self.item_fs)
+            self.pager.draw_ttf((SCREEN_W - tw) // 2, y, line,
+                                 color, self.font, self.item_fs)
+            y += 22
+        self.pager.flip()
+        while True:
+            btn = self.pager.wait_button()
+            if btn & self.pager.BTN_A:
+                return True
+            if btn & self.pager.BTN_B:
+                return False
 
     def cleanup(self):
         try:
