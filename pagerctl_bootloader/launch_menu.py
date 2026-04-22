@@ -57,6 +57,7 @@ DEFAULT_COLORS = {
     'selected': [100, 200, 255],
     'unselected': [160, 160, 160],
     'highlight_bg': [30, 50, 80],
+    'warning': [255, 180, 60],
 }
 
 PAGER_UI_ENTRY = {"name": "Exit to Pager UI", "path": "__pager_service__"}
@@ -280,6 +281,7 @@ class LauncherMenu:
             'selected': config_colors.get('selected', DEFAULT_COLORS['selected']),
             'unselected': config_colors.get('unselected', DEFAULT_COLORS['unselected']),
             'highlight_bg': config_colors.get('highlight_bg', DEFAULT_COLORS['highlight_bg']),
+            'warning': config_colors.get('warning', DEFAULT_COLORS['warning']),
         }
 
         # Background image — config override, or active pager theme default
@@ -848,7 +850,7 @@ class LauncherMenu:
         # finished coming up — warn so the user doesn't misread the
         # first-minute sluggishness as a crash.
         if self.fast_boot:
-            warn_color = self._rgb(self.colors.get('warning', [255, 180, 60]))
+            warn_color = self._rgb(self.colors['warning'])
             warn = "Fast Boot: perf may be reduced 30-45s"
             tw = self.pager.ttf_width(warn, self.font, self.item_fs)
             self.pager.draw_ttf((SCREEN_W - tw) // 2, 190, warn,
