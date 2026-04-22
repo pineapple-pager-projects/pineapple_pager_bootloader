@@ -1306,7 +1306,7 @@ stop_service() {
             "issues for the first 30-45",
             "seconds while services start.",
             "",
-            "A = enable   B = cancel",
+            "B = cancel   A = enable",
         ]
         bg = self.settings_bg or self.bg_image
         if bg and os.path.isfile(bg):
